@@ -1,0 +1,21 @@
+owner: {name: Test, email: test@example.com}
+profile: Test profile.
+search:
+  hours: 24
+  keywords: [product manager]
+  title_include: [product manager]
+  title_exclude: [director]
+  locations:
+    - name: NYC
+      match: [New York]
+  employment_types: [full-time]
+  min_salary: 100000
+  flag_salary_below: 150000
+  max_required_years: 7
+pipeline:
+  - {company: Acme, title: "Product Manager, Payments", status: applied}
+  - {company: Globex}
+sources:
+  linkedin: {enabled: true}
+  builtin: {enabled: true, site: builtinnyc.com}
+report: {timezone: America/New_York}

@@ -1,0 +1,94 @@
+# daily-job-board configuration
+#
+# Copy this file to config.local.yaml and edit it. config.local.yaml is in
+# .gitignore, so your email, profile and pipeline never get committed.
+#
+# Lists of phrases are matched case-insensitively as whole words.
+# Prefix an item with "re:" to use a regular expression instead,
+# e.g. "re:product (manager|owner)".
+
+owner:
+  name: Alex                      # used in the email greeting
+  email: alex@example.com         # where the daily report is sent
+
+# Who you are and what you want. Claude reads this to sort roles into
+# "Apply first" / "Solid fits" / "Contract" and to write the one-line
+# reason under each role. The more concrete, the better the ranking.
+profile: |
+  Data analyst with 3 years of experience, mostly SQL, dbt and Looker at a
+  mid-size e-commerce company. Built the weekly revenue dashboard used by the
+  exec team and owned A/B test readouts for checkout.
+  Looking for: analyst or analytics engineer roles, ideally consumer tech or
+  fintech, 2-5 years required. Not interested in pure data engineering or
+  roles that are mostly ad-hoc reporting.
+  Location: Chicago or remote (US). Open to contract if 6+ months.
+
+search:
+  hours: 24                       # posting window
+  grace_hours: 2                  # extra slack for boards that round ages
+  keywords:                       # what to type into each board's search box
+    - data analyst
+    - analytics engineer
+  title_include:                  # a title must contain at least one of these
+    - analyst
+    - analytics engineer
+  title_exclude:                  # ...and none of these
+    - intern
+    - internship
+    - director
+    - vice president
+    - VP
+    - head of
+    - principal
+    - financial analyst
+    - security analyst
+  locations:
+    - name: Chicago
+      match: [Chicago, Evanston, Illinois, ", IL"]   # how a posting's location must read
+      linkedin:                   # optional; improves LinkedIn's location search
+        location: Chicago, Illinois, United States
+        distance: 25
+  include_remote: true            # also include remote roles...
+  remote_countries: [US]          # ...open to these countries
+  employment_types: [full-time, contract]   # empty list = any
+  min_salary: 0                   # drop roles whose listed top of range is below this (0 = off)
+  flag_salary_below: 0            # keep, but label, roles whose listed pay is below this
+  max_required_years: 0           # drop roles asking for more years than this (0 = off)
+
+# Companies to leave out entirely.
+skip_companies: []
+
+# Roles you've already applied to or are interviewing for.
+# The same role is dropped from the report; other roles at the same company
+# are kept and labelled "In your pipeline".
+pipeline:
+  - company: Example Corp
+    title: Data Analyst, Growth
+    status: applied
+
+# Turn boards on or off and tune how deep each one looks.
+sources:
+  linkedin:
+    enabled: true
+    max_pages: 4                  # 25 results per page, per keyword and location
+    enrich_limit: 80              # how many postings to open for applicant counts
+    # remote_keywords: [...]      # narrower keywords for the nationwide remote search
+  builtin:
+    enabled: true
+    site: builtinchicago.org      # builtin.com, builtinnyc.com, builtinsf.com, builtinchicago.org, ...
+    categories: [data-analytics]  # the slug in the URL after picking a category on the site
+    max_pages: 4
+  hiringcafe:
+    enabled: true
+    max_pages: 10
+    # keywords: [...]             # any source can override search.keywords
+  wellfound:
+    enabled: true
+    roles: [data-analyst]         # the slug in wellfound.com/role/<slug>
+    location_slugs: [chicago]     # the slug in wellfound.com/role/l/<role>/<location>
+    max_pages: 5
+
+report:
+  max_jobs: 30                    # cap on roles in one email
+  timezone: America/Chicago
+  subject: "Daily job board · {date} · {count} roles"

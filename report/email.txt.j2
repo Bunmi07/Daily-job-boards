@@ -1,0 +1,29 @@
+Daily job board · {{ date }}
+{{ shown }} roles posted in the last {{ hours }} hours, picked from {{ total }} that passed your filters ({{ cross }} on more than one board)
+{% for sec in sections %}
+
+== {{ sec.title }} ({{ sec.rows|length }}) ==
+{% for r in sec.rows %}
+
+{{ r.title }} — {{ r.company }}{% if r.boards|length > 1 %} [on {{ r.boards|length }} boards]{% endif %}
+
+  {{ [r.location, r.workplace, r.salary]|select|join(' · ') }}
+{% if r.ago or r.applicants %}
+  {{ [('Posted ' ~ r.ago) if r.ago else '', (r.applicants ~ ' on LinkedIn') if r.applicants else '', ('Asks ' ~ r.yoe) if r.yoe else '']|select|join(' · ') }}
+{% endif %}
+{% if r.why %}
+  {{ r.why }}
+{% endif %}
+{% if r.pipeline %}
+  {{ r.pipeline }}
+{% endif %}
+{% for b in r.boards %}
+  {{ b.label }}: {{ b.url }}
+{% endfor %}
+{% endfor %}
+{% endfor %}
+
+Board checks:
+{% for h in health %}
+  {{ h.label }}: {{ h.status }}, {{ h.jobs }} matched of {{ h.scanned or '?' }} scanned
+{% endfor %}

@@ -1,0 +1,7 @@
+# Personal settings and run output never get committed
+config.local.yaml
+*.local.yaml
+runs/
+__pycache__/
+.pytest_cache/
+.DS_Store
