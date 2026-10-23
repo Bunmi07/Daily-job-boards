@@ -42,6 +42,12 @@ LINKEDIN = {
         {"id": "7", "title": "Product Manager", "company": "Cheap Co", "posted_at": iso(1), "salary": "$60,000 - $80,000"},
         {"id": "8", "title": "Product Manager", "company": "Part Co", "posted_at": iso(1), "employment_type": "Part-time"},
         {"id": "9", "title": "Product Manager, Data", "company": "Globex", "posted_at": iso(5)},     # company-only pipeline
+        {"id": "10", "title": "Product Manager", "company": "Faraway", "posted_at": iso(1), "location": "Noida",
+         "workplace": "Remote"},                                                                    # remote outside US
+        {"id": "11", "title": "Product Manager", "company": "Elsewhere", "posted_at": iso(1),
+         "location": "Chicago, IL"},                                                                # outside area
+        {"id": "12", "title": "Product Manager, API", "company": "Remotely", "posted_at": iso(2),
+         "location": "Austin, TX", "workplace": "Remote", "applicants": "Over 200 applicants"},     # US remote, crowded
     ],
 }
 BUILTIN = {
@@ -80,7 +86,7 @@ class PipelineTest(unittest.TestCase):
     def test_filters_and_cross_listing(self):
         data = self.merge()
         by_company = {r["company"]: r for r in data["candidates"]}
-        self.assertEqual(set(by_company), {"Initech Inc.", "Acme", "Globex", "Lowpay"})
+        self.assertEqual(set(by_company), {"Initech Inc.", "Acme", "Globex", "Lowpay", "Remotely"})
 
         initech = by_company["Initech Inc."]
         self.assertEqual([b["label"] for b in initech["boards"]], ["LinkedIn", "Built In"])
@@ -98,7 +104,7 @@ class PipelineTest(unittest.TestCase):
 
         dropped = data["dropped"]
         for reason in ("already applied", "title excluded", "older than window", "asks for too many years",
-                       "pay below minimum", "employment type"):
+                       "pay below minimum", "employment type", "remote outside the US", "outside your area"):
             self.assertEqual(dropped.get(reason), 1, reason)
 
         # Roles on more boards sort first.
@@ -108,7 +114,7 @@ class PipelineTest(unittest.TestCase):
         data = self.merge()
         keys = {r["company"]: r["key"] for r in data["candidates"]}
         (self.run_dir / "scores.json").write_text(json.dumps({
-            keys["Initech Inc."]: {"tier": "apply_first", "why": "Platform PM in NYC."},
+            keys["Initech Inc."]: {"tier": "apply_first", "lane": "pm", "why": "Platform PM in NYC & it's fresh."},
             keys["Lowpay"]: {"tier": "maybe", "why": "Pay is low."},
         }))
         args = type("A", (), {"run": str(self.run_dir)})
@@ -120,10 +126,50 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("Seen on:", html)
         self.assertIn("https://www.builtinnyc.com/job/x/b1", html)
         self.assertNotIn("Acme", html)  # unscored -> skipped once scores exist
-        self.assertIn("Platform PM in NYC.", text)
+        self.assertIn("[PM] Sr. Product Manager, Platform", text)
+        self.assertIn("Platform PM in NYC & it's fresh.", text)      # plain text is not HTML-escaped
+        self.assertIn("Platform PM in NYC &amp; it&#39;s fresh.", html)
         self.assertTrue((self.run_dir / "subject.txt").read_text().startswith("Daily job board"))
 
+    def test_render_sorts_by_applicants(self):
+        data = self.merge()
+        keys = {r["company"]: r["key"] for r in data["candidates"]}
+        (self.run_dir / "scores.json").write_text(json.dumps({
+            keys["Remotely"]: {"tier": "solid", "why": "Crowded."},
+            keys["Initech Inc."]: {"tier": "solid", "why": "Fresh."},
+            keys["Globex"]: {"tier": "solid", "why": "Unknown."},
+        }))
+        djb.cmd_render(self.cfg, type("A", (), {"run": str(self.run_dir)}))
+        text = (self.run_dir / "report.txt").read_text()
+        self.assertLess(text.index("Fresh."), text.index("Unknown."))
+        self.assertLess(text.index("Unknown."), text.index("Crowded."))
+
+    def test_details_scripts(self):
+        self.merge()
+        djb.cmd_details(self.cfg, type("A", (), {"run": str(self.run_dir)}))
+        js = (self.run_dir / "details-linkedin.js").read_text()
+        cfg = json.loads(js.splitlines()[0][len("window.__DJB_CFG = "):-1])
+        ids = [it["id"] for it in cfg["details"]["items"]]
+        self.assertIn("1", ids)                       # Initech, read from its LinkedIn posting
+        self.assertNotIn("12", ids)                   # over 200 applicants: not worth reading
+        self.assertTrue(js.rstrip().endswith("});"))
+
+    def test_hours_since_last_slot(self):
+        tz = "America/New_York"
+        at = lambda h, m: dt.datetime(2026, 10, 23, h, m, tzinfo=dt.timezone.utc)  # noqa: E731
+        # 11:15 EDT run (15:15 UTC) looks back to 17:45 the day before.
+        self.assertEqual(djb.hours_since_last_slot(["11:15", "17:45"], tz, at(15, 15)), 17.5)
+        # A run that starts 20 minutes late still counts as the 11:15 slot.
+        self.assertEqual(djb.hours_since_last_slot(["11:15", "17:45"], tz, at(15, 35)), 18)
+        # 17:45 EDT run looks back to 11:15.
+        self.assertEqual(djb.hours_since_last_slot(["11:15", "17:45"], tz, at(21, 45)), 6.5)
+        self.assertEqual(djb.hours_since_last_slot([], tz, at(21, 45)), 24)
+
     def test_helpers(self):
+        self.assertEqual(djb.applicant_rank("Under 25 applicants"), 0)
+        self.assertEqual(djb.applicant_rank("41 applicants"), 1)
+        self.assertEqual(djb.applicant_rank(None), 2)
+        self.assertEqual(djb.applicant_rank("Over 200 applicants"), 5)
         self.assertEqual(djb.pretty_salary("$22.48-$37.44"), "$22.48–$37.44/hr")
         self.assertEqual(djb.pretty_salary("150K-205K Annually"), "$150K–$205K")
         self.assertEqual(djb.salary_max("$128,000 to $252,500."), 252500)

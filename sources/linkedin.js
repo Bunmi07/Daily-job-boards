@@ -17,7 +17,7 @@ DJB.run(async () => {
         const p = new URLSearchParams({
           keywords: kw,
           location: s.location,
-          f_TPR: 'r' + CFG.hours * 3600,
+          f_TPR: 'r' + Math.round((CFG.hours + (CFG.grace_hours || 0)) * 3600),
           sortBy: 'DD',
           start: String(page * 25),
         });

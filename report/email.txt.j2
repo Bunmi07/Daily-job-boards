@@ -5,7 +5,7 @@ Daily job board · {{ date }}
 == {{ sec.title }} ({{ sec.rows|length }}) ==
 {% for r in sec.rows %}
 
-{{ r.title }} — {{ r.company }}{% if r.boards|length > 1 %} [on {{ r.boards|length }} boards]{% endif %}
+{% if r.lane %}[{{ r.lane }}] {% endif %}{{ r.title }} — {{ r.company }}{% if r.boards|length > 1 %} [on {{ r.boards|length }} boards]{% endif %}
 
   {{ [r.location, r.workplace, r.salary]|select|join(' · ') }}
 {% if r.ago or r.applicants %}

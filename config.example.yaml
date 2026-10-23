@@ -24,7 +24,8 @@ profile: |
   Location: Chicago or remote (US). Open to contract if 6+ months.
 
 search:
-  hours: 24                       # posting window
+  hours: 24                       # posting window; "auto" = time since the previous run in schedule
+  # schedule: ["11:15", "17:45"]  # with hours: auto, your daily run times (report.timezone)
   grace_hours: 2                  # extra slack for boards that round ages
   keywords:                       # what to type into each board's search box
     - data analyst
@@ -90,5 +91,7 @@ sources:
 
 report:
   max_jobs: 30                    # cap on roles in one email
+  details_limit: 45               # how many job descriptions to read before ranking
+  details_chars: 1600             # how much of each description to keep (opening + requirements)
   timezone: America/Chicago
-  subject: "Daily job board · {date} · {count} roles"
+  subject: "Daily job board · {date} · {count} roles"   # also {time}, e.g. "11:15am"

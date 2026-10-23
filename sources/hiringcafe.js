@@ -66,6 +66,7 @@ DJB.run(async () => {
           posted_at: postedAt,
           salary: lo || hi ? [money(lo), money(hi)].filter(Boolean).join(' - ') : null,
           employment_type: Array.isArray(v.commitment) ? v.commitment.join(', ') : v.commitment || null,
+          seniority: [v.seniority_level, v.role_type === 'People Manager' ? 'people manager' : null].filter(Boolean).join(', ') || null,
           yoe: v.min_industry_and_role_yoe ? `${v.min_industry_and_role_yoe}+ years` : null,
           summary: (v.requirements_summary || '').slice(0, CFG.snippet_chars || 250) || null,
         });

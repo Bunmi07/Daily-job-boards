@@ -4,6 +4,7 @@
   python scripts/djb.py plan   --config CONFIG                 list enabled sources and the page each needs
   python scripts/djb.py js     --config CONFIG --source NAME   print the script to run in that source's tab
   python scripts/djb.py merge  --config CONFIG --run RUN_DIR   filter + merge raw exports into candidates
+  python scripts/djb.py details --config CONFIG --run RUN_DIR  build the scripts that read each shortlisted job description
   python scripts/djb.py render --config CONFIG --run RUN_DIR   build the email from candidates + scores
 
 A run directory looks like:
@@ -63,7 +64,35 @@ def load_config(path: str) -> dict:
     r.setdefault("max_jobs", 30)
     r.setdefault("timezone", "America/New_York")
     r.setdefault("subject", "Daily job board · {date} · {count} roles")
+    r.setdefault("details_limit", 45)
+    r.setdefault("details_chars", 1600)
+    if str(s["hours"]).lower() == "auto":
+        s["hours"] = hours_since_last_slot(s.get("schedule") or [], r["timezone"])
     return cfg
+
+
+def hours_since_last_slot(schedule: list[str], tz_name: str, now: dt.datetime | None = None) -> float:
+    """Hours back to the previous scheduled run, so back-to-back runs don't overlap.
+
+    `schedule` lists the daily run times ("11:15", "17:45") in the report
+    timezone. A run that starts a little late still counts as its own slot.
+    """
+    from zoneinfo import ZoneInfo
+
+    if not schedule:
+        return 24.0
+    tz = ZoneInfo(tz_name)
+    now = (now or dt.datetime.now(dt.timezone.utc)).astimezone(tz)
+    ref = now - dt.timedelta(minutes=45)  # this run's own slot is not "previous"
+    slots = []
+    for day in (0, 1, 2):
+        d = (ref - dt.timedelta(days=day)).date()
+        for hm in schedule:
+            h, m = (int(x) for x in str(hm).split(":"))
+            slots.append(dt.datetime(d.year, d.month, d.day, h, m, tzinfo=tz))
+    prev = max(t for t in slots if t <= ref)
+    hours = (now - prev).total_seconds() / 3600
+    return max(1.0, round(hours * 4 + 0.49) / 4)  # round up to a quarter hour
 
 
 def phrases_regex(items: list[str], word_bounds: bool = True) -> str:
@@ -133,6 +162,18 @@ def cmd_js(cfg: dict, args) -> None:
 
 
 # ---------------------------------------------------------------- normalising
+
+_STATES = (
+    "Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|"
+    "Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|"
+    "Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|"
+    "North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|"
+    "Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|District of Columbia"
+)
+# A location that reads as somewhere in the US (for remote roles).
+US_PLACE = re.compile(rf"\b(United States|USA|U\.S\.|US|America|Americas|Anywhere|{_STATES})\b|,\s*[A-Z]{{2}}\b|Area\b")
+# A location too vague to judge ("2 Locations", "Multiple"), so it is kept.
+NO_PLACE = re.compile(r"^\s*(\d+\s+locations?|multiple locations?|various|united states|usa|us)\s*$", re.I)
 
 _CO_SUFFIX = re.compile(
     r"\b(inc|llc|ltd|limited|corp|corporation|co|company|plc|gmbh|holdings|group|technologies|technology|usa|us)\b\.?"
@@ -228,6 +269,21 @@ def applicants_label(text: str | None) -> str | None:
     return text.strip()
 
 
+def applicant_rank(label_: str | None) -> int:
+    """Sort order for how crowded a posting is: under 25 first, 200+ last, unknown in the middle."""
+    if not label_:
+        return 2
+    t = label_.lower().replace(",", "")
+    n = int((re.search(r"\d+", t) or [0])[0]) if re.search(r"\d+", t) else None
+    if "under" in t or "first" in t:
+        return 0
+    if "over" in t:
+        return 5
+    if n is None:
+        return 2
+    return 1 if n < 50 else 3 if n < 100 else 4 if n < 200 else 5
+
+
 def parse_export(text: str) -> dict:
     m = re.search(r"DJB_EXPORT_BEGIN(.*)DJB_EXPORT_END", text, re.S)
     body = m.group(1) if m else text[text.find("{") : text.rfind("}") + 1]
@@ -261,6 +317,7 @@ def cmd_merge(cfg: dict, args) -> None:
     pipeline = [(norm_company(p["company"]), norm_title(p.get("title", "")), p) for p in cfg["pipeline"]]
     letters = lambda t: re.sub(r"[^a-z]", "", (t or "").lower())  # noqa: E731
     want_types = [letters(t) for t in s["employment_types"]]
+    area = [re.compile(phrases_regex(loc.get("match", []), False), re.I) for loc in s["locations"] if loc.get("match")]
 
     health, jobs, dropped = {}, [], {}
 
@@ -301,6 +358,18 @@ def cmd_merge(cfg: dict, args) -> None:
                         continue
                 except ValueError:
                     pass
+            where = j.get("location") or ""
+            remote = "remote" in (j.get("workplace") or "").lower() or bool(re.search(r"\bremote\b", where, re.I))
+            in_area = any(a.search(where) for a in area)
+            if remote and where and not in_area and s["include_remote"] and "US" in s["remote_countries"] and not US_PLACE.search(where):
+                drop("remote outside the US")
+                continue
+            if remote and not s["include_remote"] and not in_area:
+                drop("remote")
+                continue
+            if not remote and area and where and not in_area and not NO_PLACE.search(where):
+                drop("outside your area")
+                continue
             et = letters(j.get("employment_type"))
             if want_types and et and not any(w in et for w in want_types):
                 drop("employment type")
@@ -363,6 +432,7 @@ def cmd_merge(cfg: dict, args) -> None:
                     "src": x["src"],
                     "label": label(x["src"]),
                     "url": x.get("url"),
+                    "id": x.get("id"),
                     "posted_label": x.get("posted_label"),
                     "applicants": x.get("applicants"),
                     "postings": 1,
@@ -462,6 +532,71 @@ def candidates_md(result: dict, now: dt.datetime) -> str:
     return "\n".join(lines) + "\n"
 
 
+# ---------------------------------------------------------------- details
+
+# Which tab reads a description: the board's own tab for same-origin pages,
+# otherwise the HiringCafe tab, which reads public ATS APIs (Greenhouse, Ashby, Lever).
+DETAIL_TABS = ["linkedin", "builtin", "wellfound", "hiringcafe"]
+
+
+def detail_item(r: dict) -> dict | None:
+    for src in DETAIL_TABS:
+        for b in r["boards"]:
+            if b["src"] != src or not b.get("url"):
+                continue
+            item = {"key": r["key"], "src": src, "url": b["url"], "title": r["title"], "company": r["company"]}
+            if src == "linkedin":
+                m = re.search(r"/jobs/view/(\d+)", b["url"])
+                item["id"] = m.group(1) if m else b.get("id")
+            elif src == "wellfound":
+                m = re.search(r"/jobs/(\d+)", b["url"])
+                item["id"] = m.group(1) if m else b.get("id")
+            elif src == "hiringcafe":
+                m = re.match(r"grnhse___([^_]+(?:_[^_]+)*)___(\d+)$", str(b.get("id") or ""))
+                if m:
+                    item["board_token"] = m.group(1)
+                    if "greenhouse.io" not in b["url"]:
+                        item["url"] = f"https://job-boards.greenhouse.io/{m.group(1)}/jobs/{m.group(2)}"
+            return item
+    return None
+
+
+def cmd_details(cfg: dict, args) -> None:
+    run = Path(args.run)
+    data = json.loads((run / "candidates.json").read_text())
+    rows = [r for r in data["candidates"] if applicant_rank(r["applicants"]) < 5]
+    rows.sort(key=lambda r: r["posted_at"] or "", reverse=True)
+    rows.sort(key=lambda r: applicant_rank(r["applicants"]))
+    rows = rows[: cfg["report"]["details_limit"]]
+    groups: dict[str, list] = {}
+    for r in rows:
+        it = detail_item(r)
+        if it:
+            groups.setdefault(it["src"], []).append(it)
+    chars = cfg["report"]["details_chars"]
+    for src, items in groups.items():
+        settings = {
+            "source": f"details-{src}",
+            "hours": cfg["search"]["hours"],
+            "grace_hours": cfg["search"]["grace_hours"],
+            "delay_ms": 250,
+            "details": {"items": items, "chars": chars, "head_chars": min(400, chars // 4)},
+        }
+        text = "\n".join(
+            [
+                f"window.__DJB_CFG = {json.dumps(settings)};",
+                (ROOT / "sources" / "_common.js").read_text(),
+                (ROOT / "sources" / "details.js").read_text(),
+            ]
+        )
+        text = "\n".join(l for l in text.splitlines() if l.strip() and not l.lstrip().startswith("//")) + "\n"
+        out = run / f"details-{src}.js"
+        out.write_text(text)
+        print(f"{src}\t{len(items)} roles\t{out} ({len(text)} chars)")
+    skipped = len(data["candidates"]) - sum(len(v) for v in groups.values())
+    print(f"{skipped} roles not read (over 200 applicants, past the limit of {cfg['report']['details_limit']}, or no readable link)")
+
+
 # ---------------------------------------------------------------- render
 
 
@@ -484,8 +619,12 @@ def cmd_render(cfg: dict, args) -> None:
         if tier not in groups:
             continue
         r["why"] = sc.get("why", "")
+        r["lane"] = {"pm": "PM", "tpm": "TPM", "ops": "Product ops"}.get(str(sc.get("lane", "")).lower())
         r["ago"] = ago(r["posted_at"], now)
         groups[tier].append(r)
+    for rows in groups.values():
+        rows.sort(key=lambda r: r["posted_at"] or "", reverse=True)
+        rows.sort(key=lambda r: applicant_rank(r["applicants"]))
 
     budget = cfg["report"]["max_jobs"]
     sections = []
@@ -496,18 +635,20 @@ def cmd_render(cfg: dict, args) -> None:
             sections.append({"key": k, "title": title, "rows": rows})
     shown = sum(len(sec["rows"]) for sec in sections)
     cross = sum(1 for sec in sections for r in sec["rows"] if len(r["boards"]) > 1)
-    date_str = now.astimezone(tz).strftime("%a %b %-d")
+    local = now.astimezone(tz)
+    date_str = local.strftime("%a %b %-d")
+    time_str = local.strftime("%-I:%M%p").lower().replace(":00", "")
 
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader(ROOT / "report"),
-        autoescape=jinja2.select_autoescape(["html", "j2"]),
+        autoescape=lambda name: bool(name) and name.endswith(".html.j2"),  # the text email stays plain
         trim_blocks=True,
         lstrip_blocks=True,
     )
     ctx = {
         "owner": cfg.get("owner", {}).get("name", ""),
         "date": date_str,
-        "hours": data["window_hours"],
+        "hours": f"{data['window_hours']:g}",
         "sections": sections,
         "shown": shown,
         "total": len(data["candidates"]),
@@ -521,7 +662,7 @@ def cmd_render(cfg: dict, args) -> None:
     text = env.get_template("email.txt.j2").render(**ctx)
     (run / "report.html").write_text(html)
     (run / "report.txt").write_text(text)
-    subject = cfg["report"]["subject"].format(date=date_str, count=shown)
+    subject = cfg["report"]["subject"].format(date=date_str, time=time_str, count=shown)
     (run / "subject.txt").write_text(subject)
     print(f"{subject}\n{shown} roles in {len(sections)} sections; html {len(html)} chars -> {run / 'report.html'}")
 
@@ -531,14 +672,14 @@ def cmd_render(cfg: dict, args) -> None:
 
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["plan", "js", "merge", "render"])
+    ap.add_argument("command", choices=["plan", "js", "merge", "details", "render"])
     ap.add_argument("--config", default="config.local.yaml")
     ap.add_argument("--source")
     ap.add_argument("--run", help="run directory, e.g. runs/2026-10-22")
     ap.add_argument("--out")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
-    {"plan": cmd_plan, "js": cmd_js, "merge": cmd_merge, "render": cmd_render}[args.command](cfg, args)
+    {"plan": cmd_plan, "js": cmd_js, "merge": cmd_merge, "details": cmd_details, "render": cmd_render}[args.command](cfg, args)
 
 
 if __name__ == "__main__":

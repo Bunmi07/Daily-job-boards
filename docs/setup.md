@@ -41,9 +41,12 @@ Otherwise each run stops and waits.
 
 ### Picking a time
 
-Most postings go up during US business hours. A run in the **evening Eastern
-time (8-9pm)** catches a full East Coast and West Coast day. A run early in
-the morning catches the same postings, just reported later.
+Early applicants get read first, so reporting roles while they're fresh
+matters. Two runs a day work well: **late morning (about 11am Eastern)** catches
+overnight and early-morning postings, and **late afternoon (about 5:45pm)**
+catches the business day. Set `search.hours: auto` and list both times in
+`search.schedule`, so each email only covers what was posted since the last
+one. Create one scheduled task per time, with the same prompt.
 
 ## 4. Keep the computer awake for the run
 
@@ -53,7 +56,8 @@ can't run anything.
 **Mac.** Schedule a wake a few minutes before the run:
 
 ```sh
-sudo pmset repeat wakeorpoweron MTWRFSU 20:40:00   # every day at 8:40pm
+sudo pmset repeat wakeorpoweron MTWRFSU 11:10:00   # every day at 11:10am (pmset allows one repeating wake;
+                                                   # for a second run, keep the Mac awake while plugged in)
 pmset -g sched                                     # check it
 sudo pmset repeat cancel                           # remove it later
 ```

@@ -14,6 +14,13 @@ pasted into the tab, in this order:
 After the board shows `done`, `export.js` writes the results onto the page as
 JSON so they can be read in one page-text read.
 
+`details.js` is the second pass: `djb.py details` puts the shortlist into it,
+and it reads each role's full description (same-origin on LinkedIn, Built In
+and Wellfound; through the public Greenhouse, Ashby and Lever APIs for
+HiringCafe roles) and writes a short digest onto the page. To support a new
+board there, add a reader to `readers` in `details.js` and the board to
+`DETAIL_TABS` in `djb.py`.
+
 ## Contract
 
 A board script must:

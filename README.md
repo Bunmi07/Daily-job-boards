@@ -3,13 +3,14 @@
 A daily job digest that Claude runs for you. Each run it:
 
 1. Searches **LinkedIn, Built In, HiringCafe and Wellfound** for roles posted
-   in the last 24 hours, from your own Chrome.
+   since the last run (once or twice a day), from your own Chrome.
 2. Filters them by your titles, location, pay, years of experience, and the
    companies you've already applied to.
 3. Merges the same role found on several boards into one entry, labeled
    **On N boards**, with a link to each. It also shows LinkedIn's posting time
    and applicant count.
-4. Ranks the roles against a short profile you write, sorting them into
+4. Reads the full job description of each shortlisted role, then ranks the
+   roles against a profile you write, sorting them into
    **Apply first**, **Solid fits**, **Contract** and **Worth a look**, each
    with a one-line reason.
 5. Emails you the report.

@@ -1,14 +1,15 @@
 ---
 name: daily-job-board
-description: Search LinkedIn, Built In, HiringCafe and Wellfound for jobs posted in the last day, merge roles listed on several boards, rank them against the person's profile, and email the report. Use for a daily job digest or when asked to run the job board.
+description: Search LinkedIn, Built In, HiringCafe and Wellfound for jobs posted since the last run, merge roles listed on several boards, read each shortlisted job description, rank the roles against the person's profile, and email the report. Use for a daily or twice-daily job digest or when asked to run the job board.
 ---
 
 # Daily job board
 
 Runs one job search across several boards in the person's own Chrome, merges
-the results, ranks them against the profile in their config, and emails an
-HTML report. Every step is driven by this file; the scripts do the mechanical
-parts so results are the same every day.
+the results, reads the full description of each shortlisted role, ranks them
+against the profile in their config, and emails an HTML report. Every step is
+driven by this file; the scripts do the mechanical parts so results are the
+same every run.
 
 Paths below are relative to this repository's root.
 
@@ -25,7 +26,13 @@ Paths below are relative to this repository's root.
 
 ## Run
 
-Set `RUN=runs/$(date +%F)` and create `$RUN/raw/`.
+Set `RUN=runs/$(TZ=America/New_York date +%F-%H%M)` (use the config's
+`report.timezone`) and create `$RUN/raw/`. Each run gets its own folder, so two
+runs on one day don't collide.
+
+With `search.hours: auto`, the search window is the time since the previous
+time in `search.schedule`, so a twice-daily schedule only reports roles posted
+since the last email.
 
 ### 1. Plan
 
@@ -39,7 +46,7 @@ Prints each enabled source and the page its tab must be on.
 
 Get the tab context first. Then create one new tab per source and navigate it
 to the printed page. Each script must run on its own board's site, because it
-calls that site's own endpoints.
+calls that site's own endpoints. Keep the tabs open until step 6 is done.
 
 ### 3. Start every source
 
@@ -70,7 +77,7 @@ everything between `DJB_EXPORT_BEGIN` and `DJB_EXPORT_END` (markers included)
 to `$RUN/raw/<name>.txt`. Copy the text exactly; don't retype or summarize it.
 
 A source that errors or times out still gets exported so the report can show
-it failed. Close the tabs you created when all exports are saved.
+it failed.
 
 ### 5. Merge
 
@@ -78,51 +85,107 @@ it failed. Close the tabs you created when all exports are saved.
 python scripts/djb.py merge --config config.local.yaml --run $RUN
 ```
 
-This filters titles, location, pay, employment type, skipped companies and
-roles already in the pipeline. It also merges the same role found on several
-boards into one entry that lists every board it was seen on. It writes
-`candidates.json` and `candidates.md`.
+This filters titles, location (including remote roles outside the US), pay,
+years asked, employment type, skipped companies and roles already in the
+pipeline. It also merges the same role found on several boards into one entry
+that lists every board it was seen on. It writes `candidates.json` and
+`candidates.md`.
 
-### 6. Score against the profile
+### 6. Read the job descriptions
 
-Read the `profile` in the config and `$RUN/candidates.md`. Write
-`$RUN/scores.json` mapping keys to a tier and a reason. Leave out any key you
-would mark `skip`: missing keys are treated as skipped, which keeps the file
-short.
+```
+python scripts/djb.py details --config config.local.yaml --run $RUN
+```
+
+This picks the shortlist (up to `report.details_limit` roles, least crowded
+and newest first, skipping roles with 200+ applicants) and writes one
+`$RUN/details-<tab>.js` per tab that has roles to read. LinkedIn, Built In and
+Wellfound descriptions are read in their own tabs. HiringCafe roles are read
+from the hiring company's Greenhouse, Ashby or Lever page, from the HiringCafe
+tab.
+
+For each file, pass its full contents, unchanged, to the JavaScript tool in
+the tab named in the file name. Check progress with the same status line as
+step 4. When it shows `done`, read the tab's page text: everything between
+`DJB_DETAILS_BEGIN` and `DJB_DETAILS_END` is one digest per role, headed
+`## [key] title — company`, with how much was read, the years it asks for,
+flags (degree, coding, people management, domains) and the opening plus the
+requirements section of the posting.
+
+Read every digest before scoring. You don't need to save them to disk. Close
+the tabs you created once all digests are read.
+
+### 7. Score against the profile
+
+Read the `profile` in the config, `$RUN/candidates.md` and the digests. Write
+`$RUN/scores.json` mapping keys to a tier, a lane and a reason. Leave out any
+key you would mark `skip`: missing keys are treated as skipped.
 
 ```json
-{"a1b2c3d4": {"tier": "apply_first", "why": "AI agent platform PM at a fintech; matches the compliance-agent work. Asks 5+ yrs."}}
+{"a1b2c3d4": {"tier": "apply_first", "lane": "pm", "why": "Asks 4+ yrs PM shipping developer APIs; you shipped an SDK to hundreds of devs. Wants SQL."}}
 ```
+
+`lane` is `pm` (product management), `tpm` (technical or product program
+management) or `ops` (product operations). It shows as a badge in the email.
+
+**Score from the posting, not the title.** For each role, compare what the
+description requires with what the profile says the person has actually done:
+
+1. **Function.** Is the job really product management, or product-facing
+   program management? A "Product Manager" that is business analysis, project
+   coordination, merchandising or marketing in disguise is `skip`.
+2. **Level.** Compare the years and scope the posting requires with the
+   profile. More than about one year above the person's experience, or
+   lead / principal / staff / group / people-manager scope, is `skip`.
+   Associate or entry-level is `skip` unless the profile asks for it.
+3. **Hard requirements.** A required background the profile says the person
+   lacks (for example "5+ years of healthcare product experience", "payments
+   experience required", "former software engineer", deep infrastructure such
+   as Kubernetes or GPUs, a security clearance) caps the role at `maybe`, and
+   at `skip` when it's the core of the job. "Preferred" or "nice to have"
+   gaps only lower it one tier.
+4. **What the profile says no to.** Respect it (for example roles that read
+   the person as an engineer, founding roles, a location).
+5. **Pay.** Listed pay well under the profile's target lowers a tier.
+6. **Freshness.** Roles with over 200 applicants are never `apply_first`;
+   100-200 applicants needs an unusually strong match. Under 25 or under 50
+   applicants is a reason to put a strong fit first, not to promote a weak one.
 
 Tiers:
 
-- `apply_first`: the domain or skills clearly match the profile, the level is
-  reachable (required years no more than about one above theirs), and nothing
-  in the profile rules it out. Keep this to about 8 or fewer.
-- `solid`: a reasonable fit with one clear stretch, such as a domain gap, a
-  higher level, or below-target pay.
-- `contract`: contract or temporary roles worth a look. Use this whatever the
-  fit, so contracts are easy to find.
-- `maybe`: on target but thin, such as a vague posting or an unknown company.
-- `skip`: wrong function, wrong level, a staffing-agency copy of a role that's
-  already listed, or something the profile says no to. Skipped roles are left
-  out of the email.
+- `apply_first`: the posting's requirements clearly match the profile's real
+  experience, the level is reachable, nothing above rules it out, and it isn't
+  overcrowded. At most about 6 per run. When the profile ranks one lane above
+  another (for example PM over TPM), prefer that lane among equal fits, but a
+  strong fit in the second lane beats a weak fit in the first.
+- `solid`: a reasonable fit with one clear stretch.
+- `contract`: contract or temporary roles worth a look, whatever the fit.
+- `maybe`: on target but thin, or capped by a gap in rule 3.
+- `skip`: fails rule 1, 2 or 4, or is a staffing-agency copy of a role
+  already listed.
 
-Write each `why` in plain words, up to about 20, and tie it to something in
-the profile. Name the main gap when there is one. Use only what the candidate
-line shows; don't invent details about the company or role. Base the tier on
-the profile, not the board: being on several boards is shown separately and
-doesn't raise a tier by itself.
+A role whose digest says `DESCRIPTION NOT READ`, or that wasn't on the
+shortlist, can be at most `maybe`, and its `why` says the description wasn't
+read.
 
-### 7. Render
+Write each `why` in plain words, up to about 25. Quote or closely paraphrase
+one concrete requirement from the posting and say how the profile meets it or
+where the gap is. Use only the posting and the profile: don't add facts about
+the company from your own knowledge, and don't invent experience. Base the
+tier on the fit, not the board: being on several boards is shown separately
+and doesn't raise a tier by itself.
+
+### 8. Render
 
 ```
 python scripts/djb.py render --config config.local.yaml --run $RUN
 ```
 
-This writes `report.html`, `report.txt` and `subject.txt`.
+This writes `report.html`, `report.txt` and `subject.txt`. Within each tier,
+the least crowded roles come first (by LinkedIn applicant count), then the
+newest.
 
-### 8. Send
+### 9. Send
 
 Send with Gmail to `owner.email` from the config:
 
@@ -130,14 +193,17 @@ Send with Gmail to `owner.email` from the config:
 - `htmlBody`: the contents of `report.html`
 - `body`: the contents of `report.txt`
 
-Then reply with one line: how many roles were sent, how many were on several
-boards, and any board that failed.
+Then reply with one line: how many roles were sent, how many were apply-first,
+and any board that failed.
 
 ## When something breaks
 
 - **A source returns 0 jobs and logs HTTP 4xx/5xx or "no page data".** The
   site changed or blocked the request. Send the report anyway; its "Board
   checks" footer shows the failure. Don't work around a block or a CAPTCHA.
+- **Many digests say DESCRIPTION NOT READ.** The board changed its page
+  layout, or the ATS link isn't Greenhouse, Ashby or Lever. Score those roles
+  as `maybe` at most and send the report anyway.
 - **LinkedIn shows no applicant counts.** The detail endpoint changed. The
   report still works without them.
 - **HiringCafe fails with "buildId".** Make sure the tab is on
