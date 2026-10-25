@@ -48,6 +48,8 @@ LINKEDIN = {
          "location": "Chicago, IL"},                                                                # outside area
         {"id": "12", "title": "Product Manager, API", "company": "Remotely", "posted_at": iso(2),
          "location": "Austin, TX", "workplace": "Remote", "applicants": "Over 200 applicants"},     # US remote, crowded
+        {"id": "13", "title": "Senior Product Manager (Hybrid)", "company": "Westco", "posted_at": iso(1),
+         "location": "Sunnyvale, CA", "workplace": "Remote"},                                      # tagged remote, isn't
     ],
 }
 BUILTIN = {
@@ -78,6 +80,33 @@ class PipelineTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.run_dir)
 
+    def mark_read(self, keys):
+        (self.run_dir / "read.txt").write_text("DJB_READ " + ",".join(keys) + "\n")
+
+    def test_render_without_read_list_sends_nothing(self):
+        data = self.merge()
+        (self.run_dir / "scores.json").write_text(json.dumps(
+            {r["key"]: {"tier": "solid", "why": "x"} for r in data["candidates"]}))
+        djb.cmd_render(self.cfg, type("A", (), {"run": str(self.run_dir)}))
+        self.assertIn("· 0 roles", (self.run_dir / "subject.txt").read_text())
+
+    def test_repeat_posters_flagged(self):
+        data = self.merge()
+        keys = {r["company"]: r["key"] for r in data["candidates"]}
+        (self.run_dir / "scores.json").write_text(json.dumps({keys["Globex"]: {"tier": "solid", "why": "x"}}))
+        self.mark_read(keys.values())
+        hist = self.run_dir / "history.json"
+        recent = dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes")
+        hist.write_text(json.dumps([
+            {"run": "r1", "at": recent, "ck": djb.norm_company("Globex"), "company": "Globex", "title": "PM, Ads"},
+            {"run": "r2", "at": recent, "ck": djb.norm_company("Globex"), "company": "Globex", "title": "PM, Search"},
+        ]))
+        djb.cmd_render(self.cfg, type("A", (), {"run": str(self.run_dir), "history": str(hist)}))
+        text = (self.run_dir / "report.txt").read_text()
+        self.assertIn("Companies that keep posting", text)
+        self.assertIn("Keeps posting: 2 other roles", text)
+        self.assertEqual(len(json.loads(hist.read_text())), 3)   # this run was added
+
     def merge(self):
         args = type("A", (), {"run": str(self.run_dir)})
         djb.cmd_merge(self.cfg, args)
@@ -104,7 +133,8 @@ class PipelineTest(unittest.TestCase):
 
         dropped = data["dropped"]
         for reason in ("already applied", "title excluded", "older than window", "asks for too many years",
-                       "pay below minimum", "employment type", "remote outside the US", "outside your area"):
+                       "pay below minimum", "employment type", "remote outside the US", "outside your area",
+                       "in office outside your area"):
             self.assertEqual(dropped.get(reason), 1, reason)
 
         # Roles on more boards sort first.
@@ -117,6 +147,8 @@ class PipelineTest(unittest.TestCase):
             keys["Initech Inc."]: {"tier": "apply_first", "lane": "pm", "why": "Platform PM in NYC & it's fresh."},
             keys["Lowpay"]: {"tier": "maybe", "why": "Pay is low."},
         }))
+        # Lowpay's description was never read, so it must not be sent even though it was scored.
+        self.mark_read(k for c, k in keys.items() if c != "Lowpay")
         args = type("A", (), {"run": str(self.run_dir)})
         djb.cmd_render(self.cfg, args)
         html = (self.run_dir / "report.html").read_text()
@@ -126,6 +158,8 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("Seen on:", html)
         self.assertIn("https://www.builtinnyc.com/job/x/b1", html)
         self.assertNotIn("Acme", html)  # unscored -> skipped once scores exist
+        self.assertNotIn("Lowpay", html)  # description not read -> never sent
+        self.assertIn("Left out: 1 role whose description", text)
         self.assertIn("[PM] Sr. Product Manager, Platform", text)
         self.assertIn("Platform PM in NYC & it's fresh.", text)      # plain text is not HTML-escaped
         self.assertIn("Platform PM in NYC &amp; it&#39;s fresh.", html)
@@ -139,6 +173,7 @@ class PipelineTest(unittest.TestCase):
             keys["Initech Inc."]: {"tier": "solid", "why": "Fresh."},
             keys["Globex"]: {"tier": "solid", "why": "Unknown."},
         }))
+        self.mark_read(keys.values())
         djb.cmd_render(self.cfg, type("A", (), {"run": str(self.run_dir)}))
         text = (self.run_dir / "report.txt").read_text()
         self.assertLess(text.index("Fresh."), text.index("Unknown."))
@@ -151,7 +186,8 @@ class PipelineTest(unittest.TestCase):
         cfg = json.loads(js.splitlines()[0][len("window.__DJB_CFG = "):-1])
         ids = [it["id"] for it in cfg["details"]["items"]]
         self.assertIn("1", ids)                       # Initech, read from its LinkedIn posting
-        self.assertNotIn("12", ids)                   # over 200 applicants: not worth reading
+        self.assertEqual(ids[-1], "12")               # over 200 applicants: still read, just last
+        self.assertIn("DJB_READ", js)
         self.assertTrue(js.rstrip().endswith("});"))
 
     def test_hours_since_last_slot(self):

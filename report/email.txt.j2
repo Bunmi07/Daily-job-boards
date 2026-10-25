@@ -1,5 +1,12 @@
 Daily job board · {{ date }}
 {{ shown }} roles posted in the last {{ hours }} hours, picked from {{ total }} that passed your filters ({{ cross }} on more than one board)
+{% if posters %}
+
+Companies that keep posting (many limit applications or make you wait after a rejection; pick the best fit):
+{% for p in posters %}
+  - {{ p.company }}: today {{ p.now|join('; ') }}. Earlier: {{ p.earlier|join('; ') }}
+{% endfor %}
+{% endif %}
 {% for sec in sections %}
 
 == {{ sec.title }} ({{ sec.rows|length }}) ==
@@ -17,6 +24,9 @@ Daily job board · {{ date }}
 {% if r.pipeline %}
   {{ r.pipeline }}
 {% endif %}
+{% if r.repeat %}
+  {{ r.repeat }}
+{% endif %}
 {% for b in r.boards %}
   {{ b.label }}: {{ b.url }}
 {% endfor %}
@@ -27,3 +37,6 @@ Board checks:
 {% for h in health %}
   {{ h.label }}: {{ h.status }}, {{ h.jobs }} matched of {{ h.scanned or '?' }} scanned
 {% endfor %}
+{% if unread %}
+  Left out: {{ unread }} role{{ '' if unread == 1 else 's' }} whose description couldn't be read.
+{% endif %}

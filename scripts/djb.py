@@ -172,6 +172,8 @@ _STATES = (
 )
 # A location that reads as somewhere in the US (for remote roles).
 US_PLACE = re.compile(rf"\b(United States|USA|U\.S\.|US|America|Americas|Anywhere|{_STATES})\b|,\s*[A-Z]{{2}}\b|Area\b")
+# A title or workplace label that means the job is not fully remote.
+OFFICE = re.compile(r"\b(hybrid|on[- ]?site|in[- ]office|in[- ]person)\b", re.I)
 # A location too vague to judge ("2 Locations", "Multiple"), so it is kept.
 NO_PLACE = re.compile(r"^\s*(\d+\s+locations?|multiple locations?|various|united states|usa|us)\s*$", re.I)
 
@@ -366,6 +368,11 @@ def cmd_merge(cfg: dict, args) -> None:
                 continue
             if remote and not s["include_remote"] and not in_area:
                 drop("remote")
+                continue
+            # A board's "Remote" tag is not proof: LinkedIn's remote filter returns hybrid and
+            # on-site roles too. When the title or workplace says otherwise, trust that.
+            if area and where and not in_area and OFFICE.search(f"{title} {j.get('workplace') or ''}"):
+                drop("in office outside your area")
                 continue
             if not remote and area and where and not in_area and not NO_PLACE.search(where):
                 drop("outside your area")
@@ -564,7 +571,8 @@ def detail_item(r: dict) -> dict | None:
 def cmd_details(cfg: dict, args) -> None:
     run = Path(args.run)
     data = json.loads((run / "candidates.json").read_text())
-    rows = [r for r in data["candidates"] if applicant_rank(r["applicants"]) < 5]
+    # Every role is read, crowded ones last: a role whose description isn't read is never sent.
+    rows = list(data["candidates"])
     rows.sort(key=lambda r: r["posted_at"] or "", reverse=True)
     rows.sort(key=lambda r: applicant_rank(r["applicants"]))
     rows = rows[: cfg["report"]["details_limit"]]
@@ -594,7 +602,37 @@ def cmd_details(cfg: dict, args) -> None:
         out.write_text(text)
         print(f"{src}\t{len(items)} roles\t{out} ({len(text)} chars)")
     skipped = len(data["candidates"]) - sum(len(v) for v in groups.values())
-    print(f"{skipped} roles not read (over 200 applicants, past the limit of {cfg['report']['details_limit']}, or no readable link)")
+    print(f"{skipped} roles won't be read (past the limit of {cfg['report']['details_limit']}, or no readable link) and won't be sent")
+
+
+# ---------------------------------------------------------------- history
+
+# A company counts as "keeps posting" when roles from it made the report in at
+# least REPEAT_RUNS earlier runs within REPEAT_DAYS. Many large employers cap how
+# many roles you can apply to, or make you wait after a rejection, so the report
+# flags them: pick the best-fit role there instead of applying to each one.
+REPEAT_DAYS = 14
+REPEAT_RUNS = 2
+
+
+def load_history(path: Path | None) -> list[dict]:
+    if not path or not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text() or "[]")
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else data.get("entries", [])
+
+
+def repeat_posters(history: list[dict], now: dt.datetime, run_id: str) -> dict:
+    """company key -> earlier report entries within the window (other runs only)."""
+    since = (now - dt.timedelta(days=REPEAT_DAYS)).isoformat()
+    seen: dict[str, list] = {}
+    for e in history:
+        if e.get("run") != run_id and e.get("at", "") >= since:
+            seen.setdefault(e["ck"], []).append(e)
+    return {ck: es for ck, es in seen.items() if len({e["run"] for e in es}) >= REPEAT_RUNS}
 
 
 # ---------------------------------------------------------------- render
@@ -612,8 +650,17 @@ def cmd_render(cfg: dict, args) -> None:
     tz = ZoneInfo(cfg["report"]["timezone"])
     now = dt.datetime.now(dt.timezone.utc)
 
+    # Hard rule: only roles whose full description was read can be sent. read.txt holds the
+    # DJB_READ lines from the details step; without it, nothing is sent.
+    read_path = run / "read.txt"
+    read = set(re.findall(r"[0-9a-f]{8}", " ".join(re.findall(r"DJB_READ\s+(\S*)", read_path.read_text())))) if read_path.exists() else set()
+    unread = 0
+
     groups = {k: [] for k, _ in TIERS}
     for r in data["candidates"]:
+        if r["key"] not in read:
+            unread += 1
+            continue
         sc = scores.get(r["key"], {})
         tier = sc.get("tier", "maybe" if not scores else "skip")
         if tier not in groups:
@@ -626,6 +673,11 @@ def cmd_render(cfg: dict, args) -> None:
         rows.sort(key=lambda r: r["posted_at"] or "", reverse=True)
         rows.sort(key=lambda r: applicant_rank(r["applicants"]))
 
+    hist_path = Path(args.history) if getattr(args, "history", None) else None
+    history = load_history(hist_path)
+    run_id = run.name
+    repeats = repeat_posters(history, now, run_id)
+
     budget = cfg["report"]["max_jobs"]
     sections = []
     for k, title in TIERS:
@@ -634,6 +686,21 @@ def cmd_render(cfg: dict, args) -> None:
         if rows:
             sections.append({"key": k, "title": title, "rows": rows})
     shown = sum(len(sec["rows"]) for sec in sections)
+    sent = [r for sec in sections for r in sec["rows"]]
+    posters = {}
+    for r in sent:
+        ck = norm_company(r["company"])
+        if ck in repeats:
+            earlier = repeats[ck]
+            r["repeat"] = f"Keeps posting: {len(earlier)} other role{'s' if len(earlier) != 1 else ''} here in your last {REPEAT_DAYS} days of reports"
+            p = posters.setdefault(ck, {"company": r["company"], "now": [], "earlier": sorted({e["title"] for e in earlier})})
+            p["now"].append(r["title"])
+    if hist_path:
+        keep_after = (now - dt.timedelta(days=30)).isoformat()
+        history = [e for e in history if e.get("run") != run_id and e.get("at", "") >= keep_after]
+        history += [{"run": run_id, "at": now.isoformat(timespec="minutes"), "ck": norm_company(r["company"]),
+                     "company": r["company"], "title": r["title"]} for r in sent]
+        hist_path.write_text(json.dumps(history, indent=1))
     cross = sum(1 for sec in sections for r in sec["rows"] if len(r["boards"]) > 1)
     local = now.astimezone(tz)
     date_str = local.strftime("%a %b %-d")
@@ -657,6 +724,8 @@ def cmd_render(cfg: dict, args) -> None:
             {"label": label(k), **v} for k, v in data["health"].items()
         ],
         "scored": bool(scores),
+        "unread": unread,
+        "posters": list(posters.values()),
     }
     html = env.get_template("email.html.j2").render(**ctx)
     text = env.get_template("email.txt.j2").render(**ctx)
@@ -677,6 +746,7 @@ def main(argv=None) -> None:
     ap.add_argument("--source")
     ap.add_argument("--run", help="run directory, e.g. runs/2026-10-22")
     ap.add_argument("--out")
+    ap.add_argument("--history", help="render: JSON file of earlier reports, read and then updated")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
     {"plan": cmd_plan, "js": cmd_js, "merge": cmd_merge, "details": cmd_details, "render": cmd_render}[args.command](cfg, args)

@@ -121,6 +121,29 @@ DJB.run(async () => {
     ['developer platform', /developer (experience|platform|tools?|tooling)|SDKs?\b|APIs? (platform|products?)/i],
   ];
 
+  // Where the job really is. Boards (LinkedIn especially) tag hybrid and on-site roles as
+  // remote, so this reads the whole posting, not the digest, and quotes what it found.
+  const OFFICE = [
+    /\bhybrid\b/i,
+    /\b(?:on[- ]?site|in[- ]office|in the office|in[- ]person)\b/i,
+    /\b\d\s*(?:\+\s*)?(?:days?|x)\s*(?:a|per|\/|each)?\s*week\b/i,
+    /\bmust (?:be )?(?:locate[d]?|live|reside|be based|based|relocate)\b/i,
+    /\b(?:relocat\w+|commut\w+ distance|local candidates)\b/i,
+  ];
+  const where = (t) => {
+    const found = [];
+    let end = -1;
+    for (const re of OFFICE) {
+      const m = t.match(re);
+      // Skip a match already inside the previous quote.
+      if (!m || found.length >= 2 || (m.index >= end - 70 && m.index < end)) continue;
+      found.push('"…' + t.slice(Math.max(0, m.index - 60), m.index + 70).trim() + '…"');
+      end = m.index + 70;
+    }
+    if (found.length) return 'office: ' + found.join(' ');
+    return /\bremote\b/i.test(t) ? 'says remote' : 'location not stated';
+  };
+
   for (const it of D.items) {
     DJB.state.scanned++;
     const reader = readers[it.src] && it.src !== 'hiringcafe' ? readers[it.src] : readers.ats;
@@ -145,6 +168,7 @@ DJB.run(async () => {
       posted: r && r.posted,
       years: years.join('; '),
       flags: FLAGS.filter(([, re]) => re.test(kept)).map(([n]) => n).join(', '),
+      where: full ? where(full) : null,
       text: kept,
     });
   }
@@ -156,12 +180,16 @@ DJB.run(async () => {
       [j.ok ? `read ${j.chars} chars` : 'DESCRIPTION NOT READ', j.level && `level: ${j.level}`, j.applicants, j.posted && `posted ${j.posted}`, j.years && `years: ${j.years}`, j.flags && `flags: ${j.flags}`]
         .filter(Boolean)
         .join(' | '),
+      j.where && `where: ${j.where}`,
       j.text,
-    ].join('\n')
+    ].filter(Boolean).join('\n')
   );
   const pre = document.createElement('pre');
   pre.style.whiteSpace = 'pre-wrap';
-  pre.textContent = `DJB_DETAILS_BEGIN ${CFG.source}\n\n${lines.join('\n\n')}\n\nDJB_DETAILS_END`;
+  // One short line listing the roles whose description was actually read. It is saved
+  // to $RUN/read.txt, and render leaves out every role not on it.
+  const read = DJB.state.jobs.filter((j) => j.ok).map((j) => j.id);
+  pre.textContent = `DJB_DETAILS_BEGIN ${CFG.source}\n\n${lines.join('\n\n')}\n\nDJB_READ ${read.join(',')}\nDJB_DETAILS_END`;
   document.title = 'daily-job-board details';
   document.body.replaceChildren(pre);
 });

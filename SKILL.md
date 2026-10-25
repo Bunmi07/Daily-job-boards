@@ -98,7 +98,7 @@ python scripts/djb.py details --config config.local.yaml --run $RUN
 ```
 
 This picks the shortlist (up to `report.details_limit` roles, least crowded
-and newest first, skipping roles with 200+ applicants) and writes one
+and newest first; crowded roles are read too, just last) and writes one
 `$RUN/details-<tab>.js` per tab that has roles to read. LinkedIn, Built In and
 Wellfound descriptions are read in their own tabs. HiringCafe roles are read
 from the hiring company's Greenhouse, Ashby or Lever page, from the HiringCafe
@@ -109,11 +109,18 @@ the tab named in the file name. Check progress with the same status line as
 step 4. When it shows `done`, read the tab's page text: everything between
 `DJB_DETAILS_BEGIN` and `DJB_DETAILS_END` is one digest per role, headed
 `## [key] title — company`, with how much was read, the years it asks for,
-flags (degree, coding, people management, domains) and the opening plus the
-requirements section of the posting.
+flags (degree, coding, people management, domains), a `where:` line (office
+or hybrid wording quoted from the full posting, `says remote`, or `location
+not stated`) and the opening plus the requirements section of the posting.
 
-Read every digest before scoring. You don't need to save them to disk. Close
-the tabs you created once all digests are read.
+The last line before `DJB_DETAILS_END` is `DJB_READ key,key,...`: the roles
+whose description was actually read. Save that whole line, from every details
+tab, to `$RUN/read.txt` (one line per tab). **A role whose description wasn't
+read is never sent**: render leaves out every key that isn't on a `DJB_READ`
+line, and with no `read.txt` it sends no roles at all.
+
+Read every digest before scoring. You don't need to save the digests
+themselves. Close the tabs you created once all digests are read.
 
 ### 7. Score against the profile
 
@@ -146,6 +153,13 @@ description requires with what the profile says the person has actually done:
    gaps only lower it one tier.
 4. **What the profile says no to.** Respect it (for example roles that read
    the person as an engineer, founding roles, a location).
+   **Location: don't trust a "Remote" tag.** Boards, LinkedIn above all, tag
+   hybrid and on-site roles as remote. Check the digest's `where:` line and
+   the posting: if it asks for office time (hybrid, on-site, "N days a week",
+   "must live in / relocate to") anywhere outside the profile's area, it's
+   `skip`, whatever the board says. A role listed outside the area whose
+   `where:` is `location not stated` can't be confirmed remote: `skip` it
+   unless the board listed it as plain "United States" or the area itself.
 5. **Pay.** Listed pay well under the profile's target lowers a tier.
 6. **Freshness.** Roles with over 200 applicants are never `apply_first`;
    100-200 applicants needs an unusually strong match. Under 25 or under 50
@@ -164,9 +178,9 @@ Tiers:
 - `skip`: fails rule 1, 2 or 4, or is a staffing-agency copy of a role
   already listed.
 
-A role whose digest says `DESCRIPTION NOT READ`, or that wasn't on the
-shortlist, can be at most `maybe`, and its `why` says the description wasn't
-read.
+Score only roles whose description you read. A role whose digest says
+`DESCRIPTION NOT READ`, or that wasn't on the shortlist, is left out of
+`scores.json` entirely: never score from a title, pay or board label alone.
 
 Write each `why` in plain words, up to about 25. Quote or closely paraphrase
 one concrete requirement from the posting and say how the profile meets it or
@@ -177,13 +191,29 @@ and doesn't raise a tier by itself.
 
 ### 8. Render
 
+**Report history.** Runs start from a fresh clone, so the list of what
+earlier reports sent lives in the claude.ai Project attached to the session,
+as the doc `claude/job-board-history.json`. Before rendering, read it with the
+Projects tool (`project_read`) and save its contents to `$RUN/history.json`;
+if it doesn't exist yet, or the session has no Project, write `[]` there.
+
 ```
-python scripts/djb.py render --config config.local.yaml --run $RUN
+python scripts/djb.py render --config config.local.yaml --run $RUN --history $RUN/history.json
 ```
 
 This writes `report.html`, `report.txt` and `subject.txt`. Within each tier,
 the least crowded roles come first (by LinkedIn applicant count), then the
-newest.
+newest. Only roles on a `DJB_READ` line are included.
+
+A company whose roles made at least two earlier reports in the last 14 days
+is flagged "keeps posting", with a box at the top of the email listing its
+roles from today and before. Large employers often cap applications or make
+you wait after a rejection, so the box helps pick the single best fit there.
+
+Render also adds this run's roles to `$RUN/history.json`. After sending (step
+9), write that file back with `project_write` to `claude/job-board-history.json`
+(`local_path` = `$RUN/history.json`). Skip this when the session has no
+Project; the flag then just won't appear.
 
 ### 9. Send
 
@@ -202,8 +232,8 @@ and any board that failed.
   site changed or blocked the request. Send the report anyway; its "Board
   checks" footer shows the failure. Don't work around a block or a CAPTCHA.
 - **Many digests say DESCRIPTION NOT READ.** The board changed its page
-  layout, or the ATS link isn't Greenhouse, Ashby or Lever. Score those roles
-  as `maybe` at most and send the report anyway.
+  layout, or the ATS link isn't Greenhouse, Ashby or Lever. Those roles are
+  left out; send the report anyway (its footer counts what was left out).
 - **LinkedIn shows no applicant counts.** The detail endpoint changed. The
   report still works without them.
 - **HiringCafe fails with "buildId".** Make sure the tab is on
