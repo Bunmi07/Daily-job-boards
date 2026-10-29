@@ -24,7 +24,9 @@ profile: |
   Location: Chicago or remote (US). Open to contract if 6+ months.
 
 search:
-  hours: 24                       # posting window; "auto" = time since the previous run in schedule
+  hours: 24                       # posting window; "auto" = since the previous run in schedule, or since
+                                  #   the last report actually sent if that is longer (needs --history)
+  # max_catchup_hours: 168        # with auto, never reach back further than this after missed runs
   # schedule: ["11:15", "17:45"]  # with hours: auto, your daily run times (report.timezone)
   grace_hours: 2                  # extra slack for boards that round ages
   keywords:                       # what to type into each board's search box

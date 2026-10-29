@@ -105,7 +105,9 @@ class PipelineTest(unittest.TestCase):
         text = (self.run_dir / "report.txt").read_text()
         self.assertIn("Companies that keep posting", text)
         self.assertIn("Keeps posting: 2 other roles", text)
-        self.assertEqual(len(json.loads(hist.read_text())), 3)   # this run was added
+        saved = json.loads(hist.read_text())
+        self.assertEqual(len([e for e in saved if e.get("ck")]), 3)   # this run's role was added
+        self.assertEqual(saved[-1]["kind"], "run")                    # plus a marker that it sent
 
     def merge(self):
         args = type("A", (), {"run": str(self.run_dir)})
@@ -200,6 +202,46 @@ class PipelineTest(unittest.TestCase):
         # 17:45 EDT run looks back to 11:15.
         self.assertEqual(djb.hours_since_last_slot(["11:15", "17:45"], tz, at(21, 45)), 6.5)
         self.assertEqual(djb.hours_since_last_slot([], tz, at(21, 45)), 24)
+
+    def test_history_window_covers_missed_runs(self):
+        now = dt.datetime(2026, 10, 29, 21, 45, tzinfo=dt.timezone.utc)  # 17:45 EDT
+        cfg = {"search": {"hours": 6.5, "hours_auto": True, "max_catchup_hours": 168}}
+        # Last report actually sent was the evening before: the failed 11:15 run's window is covered.
+        djb.apply_history_window(cfg, [{"run": "r", "at": "2026-10-28T22:28+00:00", "kind": "run"}], now)
+        self.assertEqual(cfg["search"]["hours"], 23.5)  # 23h17m, rounded up
+        # Never reaches back past the cap.
+        cfg["search"]["hours"] = 6.5
+        djb.apply_history_window(cfg, [{"run": "r", "at": "2026-10-01T00:00+00:00"}], now)
+        self.assertEqual(cfg["search"]["hours"], 168)
+        # A recent report keeps the normal slot window.
+        cfg["search"]["hours"] = 6.5
+        djb.apply_history_window(cfg, [{"run": "r", "at": "2026-10-29T15:40+00:00"}], now)
+        self.assertEqual(cfg["search"]["hours"], 6.5)
+        # A fixed window is left alone.
+        fixed = {"search": {"hours": 24, "hours_auto": False}}
+        djb.apply_history_window(fixed, [{"run": "r", "at": "2026-10-20T00:00+00:00"}], now)
+        self.assertEqual(fixed["search"]["hours"], 24)
+
+    def test_already_sent_and_run_markers(self):
+        now = dt.datetime(2026, 10, 29, tzinfo=dt.timezone.utc)
+        hist = [
+            {"run": "a", "at": "2026-10-28T22:28+00:00", "ck": djb.norm_company("Osmo"), "company": "Osmo",
+             "title": "Technical Product Manager"},
+            {"run": "a", "at": "2026-10-28T22:28+00:00", "kind": "run", "roles": 1},
+            {"run": "old", "at": "2026-09-01T00:00+00:00", "ck": "acme", "company": "Acme", "title": "Product Manager"},
+        ]
+        sent = djb.already_sent(hist, now)
+        self.assertIn((djb.norm_company("Osmo"), djb.norm_title("Technical Product Manager")), sent)
+        self.assertNotIn(("acme", djb.norm_title("Product Manager")), sent)  # older than 30 days
+        self.assertEqual(djb.repeat_posters(hist, now, "b"), {})  # markers don't count as a company
+
+    def test_public_boards_send_no_cookies(self):
+        self.assertEqual(djb.credentials_for("builtin", {}), "omit")
+        self.assertEqual(djb.credentials_for("hiringcafe", None), "omit")
+        self.assertEqual(djb.credentials_for("linkedin", {}), "include")
+        self.assertEqual(djb.credentials_for("wellfound", {}), "include")
+        self.assertEqual(djb.credentials_for("builtin", {"signin": True}), "include")
+        self.assertEqual(djb.credentials_for("linkedin", {"signin": False}), "omit")
 
     def test_helpers(self):
         self.assertEqual(djb.applicant_rank("Under 25 applicants"), 0)

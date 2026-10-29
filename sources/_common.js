@@ -3,7 +3,8 @@
 //
 // Contract for a source script:
 //   - It runs inside a browser tab that is already on the source's own site
-//     (so fetch() calls are same-origin and use the person's own sign-in).
+//     (so fetch() calls are same-origin). Boards that need sign-in send the
+//     person's cookies; public boards (Built In, HiringCafe) send none.
 //   - It ends with `DJB.run(async () => { ... })`, which starts the work in the
 //     background and returns immediately (browser tools time out after ~45s).
 //   - It calls DJB.add(job) for every posting that passes the filters.
@@ -75,7 +76,8 @@ window.DJB = (function () {
     async get(url, opts) {
       state.requests++;
       if (CFG.delay_ms) await new Promise((r) => setTimeout(r, CFG.delay_ms));
-      const res = await fetch(url, Object.assign({ credentials: 'include' }, opts || {}));
+      // CFG.credentials is 'omit' for boards that don't need sign-in (djb.py credentials_for).
+      const res = await fetch(url, Object.assign({ credentials: CFG.credentials || 'include' }, opts || {}));
       if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
       return res;
     },

@@ -30,17 +30,29 @@ Set `RUN=runs/$(TZ=America/New_York date +%F-%H%M)` (use the config's
 `report.timezone`) and create `$RUN/raw/`. Each run gets its own folder, so two
 runs on one day don't collide.
 
+**Report history, first.** Runs start from a fresh clone, so the list of
+what earlier reports sent lives in the claude.ai Project attached to the
+session, as the doc `claude/job-board-history.json`. Before step 1, read it
+with the Projects tool (`project_read`) and save its contents to
+`$RUN/history.json`; if it doesn't exist yet, or the session has no Project,
+write `[]` there. Pass `--history $RUN/history.json` to `plan`, `js`, `merge`
+and `render`.
+
 With `search.hours: auto`, the search window is the time since the previous
-time in `search.schedule`, so a twice-daily schedule only reports roles posted
-since the last email.
+time in `search.schedule`, or since the last report that was actually sent if
+that is longer (up to `search.max_catchup_hours`, default 168). So a run that
+failed doesn't lose its window: the next one covers it. Roles that earlier
+reports already sent are skipped, so the longer window doesn't repeat them.
+`--hours 168` on `plan`, `js` and `merge` forces a one-week look-back (a
+weekly sweep).
 
 ### 1. Plan
 
 ```
-python scripts/djb.py plan --config config.local.yaml
+python scripts/djb.py plan --config config.local.yaml --history $RUN/history.json
 ```
 
-Prints each enabled source and the page its tab must be on.
+Prints the search window, then each enabled source and the page its tab must be on.
 
 ### 2. Open one tab per source
 
@@ -53,7 +65,7 @@ calls that site's own endpoints. Keep the tabs open until step 6 is done.
 For each source:
 
 ```
-python scripts/djb.py js --config config.local.yaml --source <name> --out $RUN/<name>.js
+python scripts/djb.py js --config config.local.yaml --source <name> --out $RUN/<name>.js --history $RUN/history.json
 ```
 
 Read `$RUN/<name>.js` and pass its full contents, unchanged, to the
@@ -82,12 +94,12 @@ it failed.
 ### 5. Merge
 
 ```
-python scripts/djb.py merge --config config.local.yaml --run $RUN
+python scripts/djb.py merge --config config.local.yaml --run $RUN --history $RUN/history.json
 ```
 
 This filters titles, location (including remote roles outside the US), pay,
-years asked, employment type, skipped companies and roles already in the
-pipeline. It also merges the same role found on several boards into one entry
+years asked, employment type, skipped companies, roles already in the
+pipeline, and roles an earlier report already sent (last 30 days). It also merges the same role found on several boards into one entry
 that lists every board it was seen on. It writes `candidates.json` and
 `candidates.md`.
 
@@ -191,11 +203,7 @@ and doesn't raise a tier by itself.
 
 ### 8. Render
 
-**Report history.** Runs start from a fresh clone, so the list of what
-earlier reports sent lives in the claude.ai Project attached to the session,
-as the doc `claude/job-board-history.json`. Before rendering, read it with the
-Projects tool (`project_read`) and save its contents to `$RUN/history.json`;
-if it doesn't exist yet, or the session has no Project, write `[]` there.
+Use the `$RUN/history.json` saved before step 1.
 
 ```
 python scripts/djb.py render --config config.local.yaml --run $RUN --history $RUN/history.json
@@ -210,10 +218,12 @@ is flagged "keeps posting", with a box at the top of the email listing its
 roles from today and before. Large employers often cap applications or make
 you wait after a rejection, so the box helps pick the single best fit there.
 
-Render also adds this run's roles to `$RUN/history.json`. After sending (step
-9), write that file back with `project_write` to `claude/job-board-history.json`
-(`local_path` = `$RUN/history.json`). Skip this when the session has no
-Project; the flag then just won't appear.
+Render also adds this run's roles, plus a marker that this run sent a report,
+to `$RUN/history.json`. After sending (step 9), write that file back with
+`project_write` to `claude/job-board-history.json` (`local_path` =
+`$RUN/history.json`). Only write it back after the email is sent: the marker
+is what tells the next run where its window starts. Skip this when the session
+has no Project; the flag and the catch-up window then just won't apply.
 
 ### 9. Send
 
