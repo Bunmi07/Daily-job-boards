@@ -57,6 +57,7 @@ def load_config(path: str) -> dict:
     s.setdefault("min_salary", 0)
     s.setdefault("flag_salary_below", 0)
     s.setdefault("max_required_years", 0)
+    s.setdefault("max_catchup_hours", 168)
     cfg.setdefault("skip_companies", [])
     cfg.setdefault("pipeline", [])
     cfg.setdefault("sources", {})
@@ -66,9 +67,41 @@ def load_config(path: str) -> dict:
     r.setdefault("subject", "Daily job board · {date} · {count} roles")
     r.setdefault("details_limit", 45)
     r.setdefault("details_chars", 1600)
-    if str(s["hours"]).lower() == "auto":
+    s["hours_auto"] = str(s["hours"]).lower() == "auto"
+    if s["hours_auto"]:
         s["hours"] = hours_since_last_slot(s.get("schedule") or [], r["timezone"])
     return cfg
+
+
+def apply_history_window(cfg: dict, history: list[dict], now: dt.datetime | None = None) -> None:
+    """With `hours: auto`, reach back to the last report that was actually sent.
+
+    The schedule alone assumes the previous run worked. When it didn't (browser
+    asleep, a blocked step), roles posted in its window would never be searched.
+    So the window is the longer of "since the previous slot" and "since the last
+    sent report", capped at `search.max_catchup_hours`. Roles that earlier
+    reports already sent are skipped in merge, so a longer window doesn't repeat them.
+    """
+    s = cfg["search"]
+    if not s.get("hours_auto"):
+        return
+    last = last_report_at(history)
+    if not last:
+        return
+    now = now or dt.datetime.now(dt.timezone.utc)
+    since = (now - last).total_seconds() / 3600
+    cap = float(s.get("max_catchup_hours") or 168)
+    s["hours"] = max(s["hours"], min(cap, round(since * 4 + 0.49) / 4))
+
+
+def last_report_at(history: list[dict]) -> dt.datetime | None:
+    times = []
+    for e in history:
+        try:
+            times.append(dt.datetime.fromisoformat(str(e.get("at", "")).replace("Z", "+00:00")))
+        except ValueError:
+            continue
+    return max(times) if times else None
 
 
 def hours_since_last_slot(schedule: list[str], tz_name: str, now: dt.datetime | None = None) -> float:
@@ -112,6 +145,19 @@ def phrases_regex(items: list[str], word_bounds: bool = True) -> str:
     return rf"\b{body}\b" if word_bounds else body
 
 
+# Boards whose job pages are public: their scripts don't send the person's
+# cookies unless the config sets `signin: true` for that source.
+PUBLIC_SOURCES = {"builtin", "hiringcafe"}
+
+
+def credentials_for(name: str, src: dict | None) -> str:
+    """'omit' (no cookies) or 'include' (the person's sign-in) for a board's requests."""
+    signin = (src or {}).get("signin")
+    if signin is None:
+        signin = name not in PUBLIC_SOURCES
+    return "include" if signin else "omit"
+
+
 def enabled_sources(cfg: dict) -> list[str]:
     return [n for n, s in cfg["sources"].items() if n in SOURCES and (s or {}).get("enabled", True)]
 
@@ -120,6 +166,8 @@ def enabled_sources(cfg: dict) -> list[str]:
 
 
 def cmd_plan(cfg: dict, _args) -> None:
+    s = cfg["search"]
+    print(f"# window: last {s['hours']:g}h (+{s['grace_hours']:g}h grace)")
     for name in enabled_sources(cfg):
         print(f"{name}\t{SOURCES[name][1](cfg['sources'][name] or {})}")
 
@@ -143,6 +191,7 @@ def cmd_js(cfg: dict, args) -> None:
         "max_required_years": s["max_required_years"],
         "snippet_chars": src.get("snippet_chars", 160),
         "delay_ms": src.get("delay_ms", 300),
+        "credentials": credentials_for(name, src),
     }
     settings.update(SOURCES[name][2](cfg, src))
     out = [
@@ -317,6 +366,7 @@ def cmd_merge(cfg: dict, args) -> None:
     exc = re.compile(phrases_regex(s["title_exclude"]), re.I) if s["title_exclude"] else None
     skip = {norm_company(c) for c in cfg["skip_companies"]}
     pipeline = [(norm_company(p["company"]), norm_title(p.get("title", "")), p) for p in cfg["pipeline"]]
+    sent_before = already_sent(load_history(Path(args.history)) if getattr(args, "history", None) else [], now)
     letters = lambda t: re.sub(r"[^a-z]", "", (t or "").lower())  # noqa: E731
     want_types = [letters(t) for t in s["employment_types"]]
     area = [re.compile(phrases_regex(loc.get("match", []), False), re.I) for loc in s["locations"] if loc.get("match")]
@@ -352,6 +402,9 @@ def cmd_merge(cfg: dict, args) -> None:
                 continue
             if exc and exc.search(title):
                 drop("title excluded")
+                continue
+            if (norm_company(company), norm_title(title)) in sent_before:
+                drop("already sent in an earlier report")
                 continue
             if j.get("posted_at"):
                 try:
@@ -588,6 +641,7 @@ def cmd_details(cfg: dict, args) -> None:
             "hours": cfg["search"]["hours"],
             "grace_hours": cfg["search"]["grace_hours"],
             "delay_ms": 250,
+            "credentials": credentials_for(src, cfg["sources"].get(src)),
             "details": {"items": items, "chars": chars, "head_chars": min(400, chars // 4)},
         }
         text = "\n".join(
@@ -625,12 +679,21 @@ def load_history(path: Path | None) -> list[dict]:
     return data if isinstance(data, list) else data.get("entries", [])
 
 
+SENT_DAYS = 30
+
+
+def already_sent(history: list[dict], now: dt.datetime) -> set:
+    """(company key, title key) pairs that reports in the last SENT_DAYS sent."""
+    since = (now - dt.timedelta(days=SENT_DAYS)).isoformat()
+    return {(e["ck"], norm_title(e.get("title", ""))) for e in history if e.get("ck") and e.get("at", "") >= since}
+
+
 def repeat_posters(history: list[dict], now: dt.datetime, run_id: str) -> dict:
     """company key -> earlier report entries within the window (other runs only)."""
     since = (now - dt.timedelta(days=REPEAT_DAYS)).isoformat()
     seen: dict[str, list] = {}
     for e in history:
-        if e.get("run") != run_id and e.get("at", "") >= since:
+        if e.get("ck") and e.get("run") != run_id and e.get("at", "") >= since:
             seen.setdefault(e["ck"], []).append(e)
     return {ck: es for ck, es in seen.items() if len({e["run"] for e in es}) >= REPEAT_RUNS}
 
@@ -700,6 +763,9 @@ def cmd_render(cfg: dict, args) -> None:
         history = [e for e in history if e.get("run") != run_id and e.get("at", "") >= keep_after]
         history += [{"run": run_id, "at": now.isoformat(timespec="minutes"), "ck": norm_company(r["company"]),
                      "company": r["company"], "title": r["title"]} for r in sent]
+        # Marks that this run sent a report, even with no roles, so the next
+        # run's window starts here (see apply_history_window).
+        history.append({"run": run_id, "at": now.isoformat(timespec="minutes"), "kind": "run", "roles": len(sent)})
         hist_path.write_text(json.dumps(history, indent=1))
     cross = sum(1 for sec in sections for r in sec["rows"] if len(r["boards"]) > 1)
     local = now.astimezone(tz)
@@ -746,9 +812,15 @@ def main(argv=None) -> None:
     ap.add_argument("--source")
     ap.add_argument("--run", help="run directory, e.g. runs/2026-10-22")
     ap.add_argument("--out")
-    ap.add_argument("--history", help="render: JSON file of earlier reports, read and then updated")
+    ap.add_argument("--history", help="JSON file of earlier reports. plan/js/merge: sets the window and skips roles "
+                    "already sent. render: read, then updated with this run")
+    ap.add_argument("--hours", type=float, help="search this many hours back instead of search.hours (e.g. 168 for a weekly sweep)")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
+    if args.hours:
+        cfg["search"]["hours"], cfg["search"]["hours_auto"] = args.hours, False
+    elif args.history:
+        apply_history_window(cfg, load_history(Path(args.history)))
     {"plan": cmd_plan, "js": cmd_js, "merge": cmd_merge, "details": cmd_details, "render": cmd_render}[args.command](cfg, args)
 
 

@@ -2,7 +2,9 @@
 
 Each file here is a small script that runs inside a browser tab that's already
 on that board's website. Running there means its `fetch()` calls are
-same-origin and use the person's own sign-in.
+same-origin. LinkedIn and Wellfound requests carry the person's own sign-in;
+Built In and HiringCafe are public, so their requests send no cookies. Set
+`signin: true` or `false` on a source in the config to change that.
 
 `scripts/djb.py js --source <name>` builds the script that actually gets
 pasted into the tab, in this order:
